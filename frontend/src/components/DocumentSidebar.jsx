@@ -31,10 +31,8 @@ async function uploadFile(file, onItemPatch) {
       })
       return await uploadDocumentText(file.name, text)
     } catch (err) {
-      // Fall back to server-side PDF parsing (encrypted, malformed, etc.).
-      console.warn('Client PDF extraction failed, falling back to server:', err)
-      onItemPatch({ stage: 'uploading', progress: undefined })
-      return uploadDocument(file)
+      console.warn('Client PDF extraction failed:', err)
+      throw new Error("Failed to read PDF in browser. Document might be corrupted or image-only.")
     }
   }
 
