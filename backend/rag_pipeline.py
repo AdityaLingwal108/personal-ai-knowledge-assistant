@@ -12,8 +12,8 @@ from model_interface import CortexModel
 logger = logging.getLogger(__name__)
 
 # How many embeddings to buffer before flushing to FAISS.
-# Larger = fewer Python<->C++ hops; smaller = lower peak RAM.
-FAISS_FLUSH_SIZE = 256
+# Kept extremely low (32) to prevent OOM crashes on Render's 512MB Free Tier.
+FAISS_FLUSH_SIZE = 32
 
 
 class RAGPipeline:

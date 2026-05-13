@@ -8,11 +8,8 @@ from fastembed import TextEmbedding
 
 class EmbeddingService:
     def __init__(self):
-        # threads=None lets fastembed/ONNX auto-detect; honor a thread cap if set.
-        threads = os.getenv("FASTEMBED_THREADS")
-        kwargs = {}
-        if threads and threads.isdigit():
-            kwargs["threads"] = int(threads)
+        # Force single-threading for fastembed to prevent memory spikes on Render's 512MB limit
+        kwargs = {"threads": 1}
         self.model = TextEmbedding(
             "sentence-transformers/all-MiniLM-L6-v2", **kwargs
         )
