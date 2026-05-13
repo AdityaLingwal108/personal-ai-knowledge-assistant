@@ -10,6 +10,7 @@ export async function uploadDocument(file) {
   form.append('file', file)
   const res = await api.post('/api/documents/upload', form, {
     headers: { 'Content-Type': 'multipart/form-data' },
+    timeout: 600000, // 10 minutes for large PDFs on slow servers
   })
   return res.data
 }
