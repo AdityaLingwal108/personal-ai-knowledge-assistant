@@ -1,22 +1,17 @@
 import numpy as np
 import faiss
-from sentence_transformers import SentenceTransformer
+from fastembed import TextEmbedding
 from typing import List, Tuple
 
 
 class EmbeddingService:
     def __init__(self):
-        self.model = SentenceTransformer("all-MiniLM-L6-v2")
+        self.model = TextEmbedding("sentence-transformers/all-MiniLM-L6-v2")
         self.dim = 384
 
     def embed(self, texts: List[str]) -> np.ndarray:
-        embeddings = self.model.encode(
-            texts,
-            convert_to_numpy=True,
-            normalize_embeddings=True,
-            show_progress_bar=False,
-        )
-        return embeddings.astype(np.float32)
+        embeddings = list(self.model.embed(texts))
+        return np.array(embeddings, dtype=np.float32)
 
     def create_index(self, dim: int) -> faiss.IndexFlatIP:
         return faiss.IndexFlatIP(dim)
