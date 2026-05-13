@@ -40,6 +40,11 @@ export async function getHealth() {
   return res.data
 }
 
+export async function getDocumentStatus(filename) {
+  const res = await api.get(`/api/documents/${encodeURIComponent(filename)}/status`)
+  return res.data
+}
+
 export async function clearChat() {
   const res = await api.delete('/api/chat')
   return res.data

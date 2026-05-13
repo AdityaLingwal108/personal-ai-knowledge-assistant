@@ -1,5 +1,5 @@
 import React, { useRef, useState, useCallback } from 'react'
-import { uploadDocument, deleteDocument } from '../api/client.js'
+import { uploadDocument, deleteDocument, getDocumentStatus } from '../api/client.js'
 
 function FileStatus({ item }) {
   if (item.status === 'uploading') {
@@ -12,6 +12,20 @@ function FileStatus({ item }) {
         <span className="text-xs truncate" style={{ color: '#9ca3af' }}>
           {item.filename}
         </span>
+      </div>
+    )
+  }
+  if (item.status === 'processing') {
+    return (
+      <div className="flex items-center gap-2 px-3 py-2.5 rounded-lg" style={{ backgroundColor: '#1a1a1a' }}>
+        <div
+          className="w-3.5 h-3.5 flex-shrink-0 border-2 rounded-full animate-spin"
+          style={{ borderColor: '#f59e0b', borderTopColor: 'transparent' }}
+        />
+        <span className="text-xs truncate" style={{ color: '#f59e0b' }}>
+          {item.filename}
+        </span>
+        <span className="text-xs flex-shrink-0" style={{ color: '#6b7280' }}>indexing…</span>
       </div>
     )
   }
@@ -60,6 +74,37 @@ export default function DocumentSidebar({
   const [dragging, setDragging] = useState(false)
   const [deletingFile, setDeletingFile] = useState(null)
 
+  const pollStatus = useCallback(async (id, filename) => {
+    for (let i = 0; i < 120; i++) { // poll up to 6 minutes (120 × 3s)
+      await new Promise((r) => setTimeout(r, 3000))
+      try {
+        const { status } = await getDocumentStatus(filename)
+        if (status === 'ready') {
+          setUploadItems((prev) =>
+            prev.map((s) => (s.id === id ? { ...s, status: 'success' } : s))
+          )
+          return true
+        }
+        if (status === 'error') {
+          setUploadItems((prev) =>
+            prev.map((s) =>
+              s.id === id ? { ...s, status: 'error', error: 'Processing failed on server' } : s
+            )
+          )
+          return false
+        }
+      } catch {
+        // network hiccup — keep polling
+      }
+    }
+    setUploadItems((prev) =>
+      prev.map((s) =>
+        s.id === id ? { ...s, status: 'error', error: 'Processing timed out' } : s
+      )
+    )
+    return false
+  }, [])
+
   const processFiles = useCallback(
     async (files) => {
       const arr = Array.from(files)
@@ -78,12 +123,14 @@ export default function DocumentSidebar({
           const id = items[i].id
           try {
             await uploadDocument(file)
+            // File saved — now indexing in background
             setUploadItems((prev) =>
-              prev.map((s) => (s.id === id ? { ...s, status: 'success' } : s))
+              prev.map((s) => (s.id === id ? { ...s, status: 'processing' } : s))
             )
+            const ok = await pollStatus(id, file.name)
+            if (ok) await onDocumentsChange()
           } catch (err) {
-            const msg =
-              err.response?.data?.detail || err.message || 'Upload failed'
+            const msg = err.response?.data?.detail || err.message || 'Upload failed'
             setUploadItems((prev) =>
               prev.map((s) =>
                 s.id === id ? { ...s, status: 'error', error: msg } : s
@@ -93,14 +140,12 @@ export default function DocumentSidebar({
         })
       )
 
-      await onDocumentsChange()
-
       // Auto-clear successful items after 3s
       setTimeout(() => {
         setUploadItems((prev) => prev.filter((s) => s.status !== 'success'))
       }, 3000)
     },
-    [onDocumentsChange]
+    [onDocumentsChange, pollStatus]
   )
 
   const handleDrop = useCallback(

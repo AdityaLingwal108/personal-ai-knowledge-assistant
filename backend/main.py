@@ -1,10 +1,12 @@
+import asyncio
 import logging
 from pathlib import Path
-from typing import List
+from typing import Dict, List
 
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 
 from rag_pipeline import RAGPipeline
 
@@ -42,6 +44,25 @@ app.add_middleware(
 pipeline = RAGPipeline(data_dir=str(DATA_DIR))
 
 # ---------------------------------------------------------------------------
+# Background processing state
+# ---------------------------------------------------------------------------
+processing_status: Dict[str, str] = {}  # filename -> "processing" | "ready" | "error"
+_processing_lock = asyncio.Lock()  # one document at a time to protect FAISS index
+
+
+async def _process_document(save_path: Path, filename: str) -> None:
+    async with _processing_lock:
+        try:
+            await run_in_threadpool(pipeline.add_document, str(save_path), filename)
+            processing_status[filename] = "ready"
+            logger.info(f"Processing complete: {filename}")
+        except Exception as e:
+            logger.error(f"Processing failed for {filename}: {e}", exc_info=True)
+            save_path.unlink(missing_ok=True)
+            processing_status[filename] = "error"
+
+
+# ---------------------------------------------------------------------------
 # Request schemas
 # ---------------------------------------------------------------------------
 ALLOWED_EXTENSIONS = {".pdf", ".txt", ".docx", ".doc"}
@@ -70,7 +91,7 @@ async def health():
 
 
 @app.post("/api/documents/upload")
-async def upload_document(file: UploadFile = File(...)):
+async def upload_document(file: UploadFile = File(...), background_tasks: BackgroundTasks = BackgroundTasks()):
     ext = Path(file.filename).suffix.lower()
     if ext not in ALLOWED_EXTENSIONS:
         raise HTTPException(
@@ -83,7 +104,6 @@ async def upload_document(file: UploadFile = File(...)):
 
     save_path = DOCS_DIR / file.filename
 
-    # If document already indexed, remove old entries so re-upload refreshes it
     if file.filename in pipeline.get_documents():
         pipeline.delete_document(file.filename)
 
@@ -94,15 +114,19 @@ async def upload_document(file: UploadFile = File(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to save file: {e}")
 
-    try:
-        chunks_added = pipeline.add_document(str(save_path), file.filename)
-    except Exception as e:
-        save_path.unlink(missing_ok=True)
-        raise HTTPException(
-            status_code=500, detail=f"Failed to process document: {e}"
-        )
+    processing_status[file.filename] = "processing"
+    background_tasks.add_task(_process_document, save_path, file.filename)
 
-    return {"filename": file.filename, "chunks_added": chunks_added}
+    return {"filename": file.filename, "status": "processing"}
+
+
+@app.get("/api/documents/{filename}/status")
+async def get_document_status(filename: str):
+    status = processing_status.get(filename)
+    if status is None:
+        # Not tracked — check if it's actually in the index (e.g. persisted from before restart)
+        status = "ready" if filename in pipeline.get_documents() else "error"
+    return {"filename": filename, "status": status}
 
 
 @app.get("/api/documents")
@@ -133,6 +157,7 @@ async def delete_document(filename: str):
     if file_path.exists():
         file_path.unlink()
 
+    processing_status.pop(filename, None)
     return {"deleted": filename}
 
 
@@ -172,5 +197,4 @@ async def chat(request: ChatRequest):
 
 @app.delete("/api/chat")
 async def clear_chat():
-    # History is owned by the frontend; this endpoint is a no-op hook
     return {"status": "cleared"}
