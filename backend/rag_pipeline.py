@@ -92,6 +92,7 @@ class RAGPipeline:
         id_buffer: List[int] = []
         produced = 0
 
+        import gc
         def flush() -> None:
             if not buffer:
                 return
@@ -100,9 +101,10 @@ class RAGPipeline:
             self.embedding_service.add_to_index(self.index, arr, ids)
             buffer.clear()
             id_buffer.clear()
+            gc.collect()
 
-        # batch_size=32 keeps peak RAM low enough for Render free tier (512 MB).
-        for emb in self.embedding_service.embed_stream(text_chunks, batch_size=32):
+        # batch_size=4 keeps peak RAM ultra-low for Render free tier (512 MB).
+        for emb in self.embedding_service.embed_stream(text_chunks, batch_size=4):
             chunk_id = base_id + produced
             buffer.append(emb)
             id_buffer.append(chunk_id)
