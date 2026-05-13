@@ -98,8 +98,8 @@ class RAGPipeline:
             self.embedding_service.add_to_index(self.index, arr)
             buffer.clear()
 
-        # fastembed handles batching + parallelism internally.
-        for emb in self.embedding_service.embed_stream(text_chunks, batch_size=128):
+        # batch_size=32 keeps peak RAM low enough for Render free tier (512 MB).
+        for emb in self.embedding_service.embed_stream(text_chunks, batch_size=32):
             buffer.append(emb)
             self.chunks.append(
                 {
@@ -129,7 +129,7 @@ class RAGPipeline:
         self.index = self.embedding_service.create_index(self.dim)
         if self.chunks:
             texts = [c["text"] for c in self.chunks]
-            embeddings = self.embedding_service.embed(texts, batch_size=128)
+            embeddings = self.embedding_service.embed(texts, batch_size=32)
             self.embedding_service.add_to_index(self.index, embeddings)
 
         # Re-assign sequential IDs

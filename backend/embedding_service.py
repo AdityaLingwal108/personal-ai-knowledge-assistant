@@ -18,13 +18,13 @@ class EmbeddingService:
         )
         self.dim = 384
 
-    def embed(self, texts: List[str], batch_size: int = 128) -> np.ndarray:
+    def embed(self, texts: List[str], batch_size: int = 32) -> np.ndarray:
         """Embed a list of texts. Used for small inputs (queries, deletion rebuilds)."""
         embeddings = list(self.model.embed(texts, batch_size=batch_size))
         return np.array(embeddings, dtype=np.float32)
 
     def embed_stream(
-        self, texts: List[str], batch_size: int = 128
+        self, texts: List[str], batch_size: int = 32
     ) -> Iterable[np.ndarray]:
         """Yield embeddings one-by-one as fastembed produces them.
 
