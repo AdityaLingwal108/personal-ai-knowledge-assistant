@@ -147,7 +147,7 @@ export default function DocumentSidebar({
             />
           </svg>
           <span className="font-semibold text-sm" style={{ color: '#e5e5e5' }}>
-            Knowledge Base
+            Cortex
           </span>
         </div>
 
