@@ -1,10 +1,19 @@
 import json
+import logging
 from pathlib import Path
-from typing import List, Dict
+from typing import Callable, Dict, List, Optional
+
+import numpy as np
 
 from document_loader import load_document, chunk_text
 from embedding_service import EmbeddingService
 from model_interface import CortexModel
+
+logger = logging.getLogger(__name__)
+
+# How many embeddings to buffer before flushing to FAISS.
+# Larger = fewer Python<->C++ hops; smaller = lower peak RAM.
+FAISS_FLUSH_SIZE = 256
 
 
 class RAGPipeline:
@@ -41,9 +50,33 @@ class RAGPipeline:
     # Document management
     # ------------------------------------------------------------------
 
-    def add_document(self, filepath: str, filename: str) -> int:
-        text = load_document(filepath)
+    def add_document(
+        self,
+        filepath: Optional[str],
+        filename: str,
+        progress_cb: Optional[Callable[[str, float], None]] = None,
+        text: Optional[str] = None,
+    ) -> int:
+        """Parse, chunk, embed, and index a document.
+
+        Either ``filepath`` (server-side parsing) or ``text`` (pre-extracted)
+        must be provided. progress_cb(stage, fraction) is called with stage in
+        {"parsing", "embedding", "saving"} and fraction in [0, 1].
+        """
+        def report(stage: str, frac: float) -> None:
+            if progress_cb is not None:
+                try:
+                    progress_cb(stage, max(0.0, min(1.0, frac)))
+                except Exception:
+                    pass
+
+        report("parsing", 0.0)
+        if text is None:
+            if not filepath:
+                raise ValueError("add_document requires either filepath or text")
+            text = load_document(filepath)
         text_chunks = chunk_text(text)
+        report("parsing", 1.0)
 
         if not text_chunks:
             raise ValueError(
@@ -51,20 +84,43 @@ class RAGPipeline:
                 "The file may be empty or contain only images."
             )
 
-        # Embed in batches to avoid OOM on large documents
-        BATCH_SIZE = 32
+        total = len(text_chunks)
+        logger.info(f"[{filename}] embedding {total} chunks")
         base_id = len(self.chunks)
-        for i in range(0, len(text_chunks), BATCH_SIZE):
-            batch = text_chunks[i:i + BATCH_SIZE]
-            embeddings = self.embedding_service.embed(batch)
-            self.embedding_service.add_to_index(self.index, embeddings)
-            for j, chunk_text_item in enumerate(batch):
-                self.chunks.append(
-                    {"id": base_id + i + j, "text": chunk_text_item, "source": filename}
-                )
 
+        buffer: List[np.ndarray] = []
+        produced = 0
+
+        def flush() -> None:
+            if not buffer:
+                return
+            arr = np.array(buffer, dtype=np.float32)
+            self.embedding_service.add_to_index(self.index, arr)
+            buffer.clear()
+
+        # fastembed handles batching + parallelism internally.
+        for emb in self.embedding_service.embed_stream(text_chunks, batch_size=128):
+            buffer.append(emb)
+            self.chunks.append(
+                {
+                    "id": base_id + produced,
+                    "text": text_chunks[produced],
+                    "source": filename,
+                }
+            )
+            produced += 1
+
+            if len(buffer) >= FAISS_FLUSH_SIZE:
+                flush()
+                report("embedding", produced / total)
+
+        flush()
+        report("embedding", 1.0)
+
+        report("saving", 0.0)
         self._save()
-        return len(text_chunks)
+        report("saving", 1.0)
+        return total
 
     def delete_document(self, filename: str) -> None:
         self.chunks = [c for c in self.chunks if c["source"] != filename]
@@ -73,7 +129,7 @@ class RAGPipeline:
         self.index = self.embedding_service.create_index(self.dim)
         if self.chunks:
             texts = [c["text"] for c in self.chunks]
-            embeddings = self.embedding_service.embed(texts)
+            embeddings = self.embedding_service.embed(texts, batch_size=128)
             self.embedding_service.add_to_index(self.index, embeddings)
 
         # Re-assign sequential IDs

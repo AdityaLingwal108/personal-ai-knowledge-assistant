@@ -1,31 +1,106 @@
 import React, { useRef, useState, useCallback } from 'react'
-import { uploadDocument, deleteDocument, getDocumentStatus } from '../api/client.js'
+import {
+  uploadDocument,
+  uploadDocumentText,
+  deleteDocument,
+  getDocumentStatus,
+} from '../api/client.js'
+
+function getExt(name) {
+  const i = name.lastIndexOf('.')
+  return i >= 0 ? name.slice(i).toLowerCase() : ''
+}
+
+// Extract text in the browser for PDF/TXT; fall back to binary upload on failure.
+// DOCX always goes through server-side parsing.
+async function uploadFile(file, onItemPatch) {
+  const ext = getExt(file.name)
+
+  if (ext === '.txt') {
+    const { extractTxtText } = await import('../api/extractText.js')
+    const text = await extractTxtText(file)
+    return uploadDocumentText(file.name, text)
+  }
+
+  if (ext === '.pdf') {
+    try {
+      const { extractPdfText } = await import('../api/extractText.js')
+      onItemPatch({ stage: 'reading', progress: 0 })
+      const text = await extractPdfText(file, (frac) => {
+        onItemPatch({ stage: 'reading', progress: frac })
+      })
+      return await uploadDocumentText(file.name, text)
+    } catch (err) {
+      // Fall back to server-side PDF parsing (encrypted, malformed, etc.).
+      console.warn('Client PDF extraction failed, falling back to server:', err)
+      onItemPatch({ stage: 'uploading', progress: undefined })
+      return uploadDocument(file)
+    }
+  }
+
+  // .docx, .doc, anything else → binary upload
+  return uploadDocument(file)
+}
 
 function FileStatus({ item }) {
   if (item.status === 'uploading') {
+    const pct = typeof item.progress === 'number' ? Math.round(item.progress * 100) : null
+    const label = item.stage === 'reading' ? 'reading…' : 'uploading…'
     return (
-      <div className="flex items-center gap-2 px-3 py-2.5 rounded-lg" style={{ backgroundColor: '#1a1a1a' }}>
-        <div
-          className="w-3.5 h-3.5 flex-shrink-0 border-2 rounded-full animate-spin"
-          style={{ borderColor: '#2563eb', borderTopColor: 'transparent' }}
-        />
-        <span className="text-xs truncate" style={{ color: '#9ca3af' }}>
-          {item.filename}
-        </span>
+      <div className="px-3 py-2.5 rounded-lg" style={{ backgroundColor: '#1a1a1a' }}>
+        <div className="flex items-center gap-2">
+          <div
+            className="w-3.5 h-3.5 flex-shrink-0 border-2 rounded-full animate-spin"
+            style={{ borderColor: '#2563eb', borderTopColor: 'transparent' }}
+          />
+          <span className="text-xs truncate flex-1" style={{ color: '#9ca3af' }}>
+            {item.filename}
+          </span>
+          <span className="text-xs flex-shrink-0" style={{ color: '#6b7280' }}>
+            {pct !== null ? `${pct}%` : label}
+          </span>
+        </div>
+        {pct !== null && (
+          <div className="mt-1.5 h-1 w-full rounded-full overflow-hidden" style={{ backgroundColor: '#262626' }}>
+            <div
+              className="h-full transition-all duration-300"
+              style={{ width: `${pct}%`, backgroundColor: '#2563eb' }}
+            />
+          </div>
+        )}
       </div>
     )
   }
   if (item.status === 'processing') {
+    const pct = typeof item.progress === 'number' ? Math.round(item.progress * 100) : null
+    const stageLabel = {
+      queued: 'queued…',
+      parsing: 'reading…',
+      embedding: 'indexing…',
+      saving: 'saving…',
+    }[item.stage] || 'indexing…'
     return (
-      <div className="flex items-center gap-2 px-3 py-2.5 rounded-lg" style={{ backgroundColor: '#1a1a1a' }}>
-        <div
-          className="w-3.5 h-3.5 flex-shrink-0 border-2 rounded-full animate-spin"
-          style={{ borderColor: '#f59e0b', borderTopColor: 'transparent' }}
-        />
-        <span className="text-xs truncate" style={{ color: '#f59e0b' }}>
-          {item.filename}
-        </span>
-        <span className="text-xs flex-shrink-0" style={{ color: '#6b7280' }}>indexing…</span>
+      <div className="px-3 py-2.5 rounded-lg" style={{ backgroundColor: '#1a1a1a' }}>
+        <div className="flex items-center gap-2">
+          <div
+            className="w-3.5 h-3.5 flex-shrink-0 border-2 rounded-full animate-spin"
+            style={{ borderColor: '#f59e0b', borderTopColor: 'transparent' }}
+          />
+          <span className="text-xs truncate flex-1" style={{ color: '#f59e0b' }}>
+            {item.filename}
+          </span>
+          <span className="text-xs flex-shrink-0" style={{ color: '#6b7280' }}>
+            {pct !== null ? `${pct}%` : stageLabel}
+          </span>
+        </div>
+        {pct !== null && (
+          <div className="mt-1.5 h-1 w-full rounded-full overflow-hidden" style={{ backgroundColor: '#262626' }}>
+            <div
+              className="h-full transition-all duration-300"
+              style={{ width: `${pct}%`, backgroundColor: '#f59e0b' }}
+            />
+          </div>
+        )}
       </div>
     )
   }
@@ -75,10 +150,12 @@ export default function DocumentSidebar({
   const [deletingFile, setDeletingFile] = useState(null)
 
   const pollStatus = useCallback(async (id, filename) => {
-    for (let i = 0; i < 120; i++) { // poll up to 6 minutes (120 × 3s)
-      await new Promise((r) => setTimeout(r, 3000))
+    // Poll up to ~15 minutes (450 × 2s). Picks up progress/stage as they update.
+    for (let i = 0; i < 450; i++) {
+      await new Promise((r) => setTimeout(r, 2000))
       try {
-        const { status } = await getDocumentStatus(filename)
+        const res = await getDocumentStatus(filename)
+        const { status, stage, progress, error } = res
         if (status === 'ready') {
           setUploadItems((prev) =>
             prev.map((s) => (s.id === id ? { ...s, status: 'success' } : s))
@@ -88,11 +165,19 @@ export default function DocumentSidebar({
         if (status === 'error') {
           setUploadItems((prev) =>
             prev.map((s) =>
-              s.id === id ? { ...s, status: 'error', error: 'Processing failed on server' } : s
+              s.id === id
+                ? { ...s, status: 'error', error: error || 'Processing failed on server' }
+                : s
             )
           )
           return false
         }
+        // still processing — patch stage/progress into the UI
+        setUploadItems((prev) =>
+          prev.map((s) =>
+            s.id === id ? { ...s, status: 'processing', stage, progress } : s
+          )
+        )
       } catch {
         // network hiccup — keep polling
       }
@@ -121,21 +206,19 @@ export default function DocumentSidebar({
       await Promise.all(
         arr.map(async (file, i) => {
           const id = items[i].id
-          try {
-            await uploadDocument(file)
-            // File saved — now indexing in background
+          const patch = (delta) =>
             setUploadItems((prev) =>
-              prev.map((s) => (s.id === id ? { ...s, status: 'processing' } : s))
+              prev.map((s) => (s.id === id ? { ...s, ...delta } : s))
             )
+          try {
+            await uploadFile(file, patch)
+            // Bytes are on the server — now indexing in background
+            patch({ status: 'processing', stage: 'queued', progress: 0 })
             const ok = await pollStatus(id, file.name)
             if (ok) await onDocumentsChange()
           } catch (err) {
             const msg = err.response?.data?.detail || err.message || 'Upload failed'
-            setUploadItems((prev) =>
-              prev.map((s) =>
-                s.id === id ? { ...s, status: 'error', error: msg } : s
-              )
-            )
+            patch({ status: 'error', error: msg })
           }
         })
       )

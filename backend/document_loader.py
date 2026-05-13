@@ -18,14 +18,23 @@ def load_document(filepath: str) -> str:
 
 def _load_pdf(filepath: str) -> str:
     try:
-        from pypdf import PdfReader
+        import pypdfium2 as pdfium
 
-        reader = PdfReader(filepath)
-        pages = []
-        for page in reader.pages:
-            text = page.extract_text()
-            if text and text.strip():
-                pages.append(text)
+        pdf = pdfium.PdfDocument(filepath)
+        try:
+            pages: List[str] = []
+            for page in pdf:
+                textpage = page.get_textpage()
+                try:
+                    text = textpage.get_text_range()
+                finally:
+                    textpage.close()
+                    page.close()
+                if text and text.strip():
+                    pages.append(text)
+        finally:
+            pdf.close()
+
         if not pages:
             raise ValueError(f"No extractable text found in PDF: {filepath}")
         return "\n".join(pages)

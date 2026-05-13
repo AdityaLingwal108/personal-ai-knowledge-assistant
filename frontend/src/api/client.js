@@ -15,6 +15,15 @@ export async function uploadDocument(file) {
   return res.data
 }
 
+export async function uploadDocumentText(filename, text) {
+  const res = await api.post(
+    '/api/documents/upload-text',
+    { filename, text },
+    { timeout: 120000 }
+  )
+  return res.data
+}
+
 export async function getDocuments() {
   const res = await api.get('/api/documents')
   return res.data

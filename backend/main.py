@@ -1,7 +1,8 @@
 import asyncio
 import logging
+import time
 from pathlib import Path
-from typing import Dict, List
+from typing import Any, Dict, List, Optional
 
 from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -43,29 +44,80 @@ app.add_middleware(
 # ---------------------------------------------------------------------------
 pipeline = RAGPipeline(data_dir=str(DATA_DIR))
 
+# Force the ONNX session to compile now, before the first real request.
+# fastembed lazily initializes on first embed call (~5-10s); doing it here
+# moves that cost off the user's first upload.
+try:
+    pipeline.embedding_service.embed(["warmup"])
+    logger.info("Embedding model warmed up")
+except Exception as e:
+    logger.warning(f"Embedding warmup skipped: {e}")
+
 # ---------------------------------------------------------------------------
 # Background processing state
+#   processing_status[filename] = {
+#       "status": "processing" | "ready" | "error",
+#       "stage":  "parsing" | "embedding" | "saving" | "done" | "error",
+#       "progress": float in [0, 1],
+#       "started_at": epoch seconds,
+#       "error": optional str,
+#   }
 # ---------------------------------------------------------------------------
-processing_status: Dict[str, str] = {}  # filename -> "processing" | "ready" | "error"
+processing_status: Dict[str, Dict[str, Any]] = {}
 _processing_lock = asyncio.Lock()  # one document at a time to protect FAISS index
 
+UPLOAD_CHUNK = 1024 * 1024  # 1 MiB
+ALLOWED_EXTENSIONS = {".pdf", ".txt", ".docx", ".doc"}
 
-async def _process_document(save_path: Path, filename: str) -> None:
+
+def _set_status(filename: str, **patch: Any) -> None:
+    entry = processing_status.setdefault(filename, {})
+    entry.update(patch)
+
+
+async def _process_document(
+    filename: str,
+    save_path: Optional[Path] = None,
+    text: Optional[str] = None,
+) -> None:
     async with _processing_lock:
+        loop = asyncio.get_running_loop()
+
+        def progress_cb(stage: str, frac: float) -> None:
+            # Called from worker thread — schedule the update on the event loop.
+            loop.call_soon_threadsafe(
+                _set_status, filename, stage=stage, progress=frac
+            )
+
         try:
-            await run_in_threadpool(pipeline.add_document, str(save_path), filename)
-            processing_status[filename] = "ready"
+            _set_status(
+                filename,
+                status="processing",
+                stage="parsing",
+                progress=0.0,
+                started_at=time.time(),
+            )
+            await run_in_threadpool(
+                pipeline.add_document,
+                str(save_path) if save_path else None,
+                filename,
+                progress_cb,
+                text,
+            )
+            _set_status(filename, status="ready", stage="done", progress=1.0)
             logger.info(f"Processing complete: {filename}")
         except Exception as e:
             logger.error(f"Processing failed for {filename}: {e}", exc_info=True)
-            save_path.unlink(missing_ok=True)
-            processing_status[filename] = "error"
+            if save_path is not None:
+                save_path.unlink(missing_ok=True)
+            _set_status(
+                filename, status="error", stage="error", error=str(e)
+            )
 
 
 # ---------------------------------------------------------------------------
 # Request schemas
 # ---------------------------------------------------------------------------
-ALLOWED_EXTENSIONS = {".pdf", ".txt", ".docx", ".doc"}
 
 
 class ChatRequest(BaseModel):
@@ -91,7 +143,10 @@ async def health():
 
 
 @app.post("/api/documents/upload")
-async def upload_document(file: UploadFile = File(...), background_tasks: BackgroundTasks = BackgroundTasks()):
+async def upload_document(
+    file: UploadFile = File(...),
+    background_tasks: BackgroundTasks = BackgroundTasks(),
+):
     ext = Path(file.filename).suffix.lower()
     if ext not in ALLOWED_EXTENSIONS:
         raise HTTPException(
@@ -107,26 +162,117 @@ async def upload_document(file: UploadFile = File(...), background_tasks: Backgr
     if file.filename in pipeline.get_documents():
         pipeline.delete_document(file.filename)
 
+    # Stream to disk so we never hold the full file in RAM.
     try:
-        content = await file.read()
+        bytes_written = 0
         with open(save_path, "wb") as f:
-            f.write(content)
+            while True:
+                chunk = await file.read(UPLOAD_CHUNK)
+                if not chunk:
+                    break
+                f.write(chunk)
+                bytes_written += len(chunk)
+        logger.info(f"Saved {filename_size_log(file.filename, bytes_written)}")
     except Exception as e:
+        save_path.unlink(missing_ok=True)
         raise HTTPException(status_code=500, detail=f"Failed to save file: {e}")
 
-    processing_status[file.filename] = "processing"
-    background_tasks.add_task(_process_document, save_path, file.filename)
+    _set_status(
+        file.filename,
+        status="processing",
+        stage="queued",
+        progress=0.0,
+        started_at=time.time(),
+        error=None,
+    )
+    background_tasks.add_task(
+        _process_document, file.filename, save_path, None
+    )
 
     return {"filename": file.filename, "status": "processing"}
 
 
+class UploadTextRequest(BaseModel):
+    filename: str
+    text: str
+
+
+@app.post("/api/documents/upload-text")
+async def upload_text(
+    payload: UploadTextRequest,
+    background_tasks: BackgroundTasks = BackgroundTasks(),
+):
+    """Accept pre-extracted text (e.g., from client-side PDF.js).
+
+    Much faster path than uploading binary: skips network transfer of the raw
+    file and server-side parsing entirely.
+    """
+    filename = payload.filename.strip()
+    text = payload.text
+    if not filename:
+        raise HTTPException(status_code=400, detail="filename is required")
+    if not text or not text.strip():
+        raise HTTPException(
+            status_code=400,
+            detail="No text extracted from the document. It may be encrypted or image-only.",
+        )
+
+    ext = Path(filename).suffix.lower()
+    if ext not in ALLOWED_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Unsupported file type '{ext}'. "
+                f"Allowed types: {', '.join(sorted(ALLOWED_EXTENSIONS))}"
+            ),
+        )
+
+    if filename in pipeline.get_documents():
+        pipeline.delete_document(filename)
+
+    _set_status(
+        filename,
+        status="processing",
+        stage="queued",
+        progress=0.0,
+        started_at=time.time(),
+        error=None,
+    )
+    background_tasks.add_task(_process_document, filename, None, text)
+
+    return {"filename": filename, "status": "processing"}
+
+
+def filename_size_log(name: str, n: int) -> str:
+    if n < 1024:
+        size = f"{n} B"
+    elif n < 1024 * 1024:
+        size = f"{n / 1024:.1f} KB"
+    else:
+        size = f"{n / (1024 * 1024):.1f} MB"
+    return f"{name} ({size})"
+
+
 @app.get("/api/documents/{filename}/status")
 async def get_document_status(filename: str):
-    status = processing_status.get(filename)
-    if status is None:
-        # Not tracked — check if it's actually in the index (e.g. persisted from before restart)
-        status = "ready" if filename in pipeline.get_documents() else "error"
-    return {"filename": filename, "status": status}
+    entry = processing_status.get(filename)
+    if entry is None:
+        # Not tracked — check if it's actually in the index (persisted from before restart).
+        if filename in pipeline.get_documents():
+            return {
+                "filename": filename,
+                "status": "ready",
+                "stage": "done",
+                "progress": 1.0,
+            }
+        return {
+            "filename": filename,
+            "status": "error",
+            "stage": "error",
+            "progress": 0.0,
+            "error": "Unknown document",
+        }
+    return {"filename": filename, **entry}
 
 
 @app.get("/api/documents")

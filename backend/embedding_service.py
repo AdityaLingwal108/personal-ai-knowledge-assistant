@@ -1,17 +1,38 @@
-import numpy as np
+import os
+from typing import Iterable, List, Tuple
+
 import faiss
+import numpy as np
 from fastembed import TextEmbedding
-from typing import List, Tuple
 
 
 class EmbeddingService:
     def __init__(self):
-        self.model = TextEmbedding("sentence-transformers/all-MiniLM-L6-v2")
+        # threads=None lets fastembed/ONNX auto-detect; honor a thread cap if set.
+        threads = os.getenv("FASTEMBED_THREADS")
+        kwargs = {}
+        if threads and threads.isdigit():
+            kwargs["threads"] = int(threads)
+        self.model = TextEmbedding(
+            "sentence-transformers/all-MiniLM-L6-v2", **kwargs
+        )
         self.dim = 384
 
-    def embed(self, texts: List[str]) -> np.ndarray:
-        embeddings = list(self.model.embed(texts))
+    def embed(self, texts: List[str], batch_size: int = 128) -> np.ndarray:
+        """Embed a list of texts. Used for small inputs (queries, deletion rebuilds)."""
+        embeddings = list(self.model.embed(texts, batch_size=batch_size))
         return np.array(embeddings, dtype=np.float32)
+
+    def embed_stream(
+        self, texts: List[str], batch_size: int = 128
+    ) -> Iterable[np.ndarray]:
+        """Yield embeddings one-by-one as fastembed produces them.
+
+        Lets the caller flush to FAISS in larger groups without buffering every
+        embedding in memory.
+        """
+        for emb in self.model.embed(texts, batch_size=batch_size):
+            yield emb
 
     def create_index(self, dim: int) -> faiss.IndexFlatIP:
         return faiss.IndexFlatIP(dim)
