@@ -51,16 +51,17 @@ class RAGPipeline:
                 "The file may be empty or contain only images."
             )
 
-        embeddings = self.embedding_service.embed(text_chunks)
-
-        # Incremental add — never rebuild index on upload
-        self.embedding_service.add_to_index(self.index, embeddings)
-
+        # Embed in batches to avoid OOM on large documents
+        BATCH_SIZE = 32
         base_id = len(self.chunks)
-        for i, chunk_text_item in enumerate(text_chunks):
-            self.chunks.append(
-                {"id": base_id + i, "text": chunk_text_item, "source": filename}
-            )
+        for i in range(0, len(text_chunks), BATCH_SIZE):
+            batch = text_chunks[i:i + BATCH_SIZE]
+            embeddings = self.embedding_service.embed(batch)
+            self.embedding_service.add_to_index(self.index, embeddings)
+            for j, chunk_text_item in enumerate(batch):
+                self.chunks.append(
+                    {"id": base_id + i + j, "text": chunk_text_item, "source": filename}
+                )
 
         self._save()
         return len(text_chunks)
