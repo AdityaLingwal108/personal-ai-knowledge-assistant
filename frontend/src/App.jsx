@@ -39,7 +39,7 @@ function uid() {
 export default function App() {
   const [state, dispatch] = useReducer(reducer, initialState)
   const [apiKey, setApiKey] = useState(
-    () => localStorage.getItem('gemini_api_key') || ''
+    () => localStorage.getItem('groq_api_key') || ''
   )
   const [topK, setTopK] = useState(
     () => parseInt(localStorage.getItem('top_k') || '5') || 5
@@ -61,7 +61,7 @@ export default function App() {
 
   const handleApiKeyChange = useCallback((key) => {
     setApiKey(key)
-    localStorage.setItem('gemini_api_key', key)
+    localStorage.setItem('groq_api_key', key)
   }, [])
 
   const handleTopKChange = useCallback((k) => {
