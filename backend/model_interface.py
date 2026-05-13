@@ -40,19 +40,15 @@ class CortexModel:
         # Cap history at last 10 messages
         recent_history = history[-10:]
 
-        # Build conversation history string
-        history_lines = []
-        for msg in recent_history:
-            role_label = "User" if msg["role"] == "user" else "Assistant"
-            history_lines.append(f"{role_label}: {msg['content']}")
-
         # Assemble full prompt
-        sections = [f"DOCUMENT CONTEXT:\n{context_block}"]
-        if history_lines:
-            sections.append("CONVERSATION HISTORY:\n" + "\n".join(history_lines))
-        sections.append(f"CURRENT QUESTION: {query}")
+        full_prompt = f"DOCUMENT CONTEXT:\n{context_block}\n\nCURRENT QUESTION: {query}"
 
-        full_prompt = "\n\n".join(sections)
+        # Build native messages array
+        messages = [{"role": "system", "content": SYSTEM_INSTRUCTION}]
+        for msg in recent_history:
+            messages.append({"role": msg["role"], "content": msg["content"]})
+        
+        messages.append({"role": "user", "content": full_prompt})
 
         try:
             client = OpenAI(
@@ -61,10 +57,7 @@ class CortexModel:
             )
             response = client.chat.completions.create(
                 model=self.model_name,
-                messages=[
-                    {"role": "system", "content": SYSTEM_INSTRUCTION},
-                    {"role": "user", "content": full_prompt},
-                ],
+                messages=messages,
                 temperature=0.2,
                 max_tokens=2048,
             )

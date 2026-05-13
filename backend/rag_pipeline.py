@@ -86,24 +86,29 @@ class RAGPipeline:
 
         total = len(text_chunks)
         logger.info(f"[{filename}] embedding {total} chunks")
-        base_id = len(self.chunks)
+        base_id = max([c.get("id", -1) for c in self.chunks], default=-1) + 1
 
         buffer: List[np.ndarray] = []
+        id_buffer: List[int] = []
         produced = 0
 
         def flush() -> None:
             if not buffer:
                 return
             arr = np.array(buffer, dtype=np.float32)
-            self.embedding_service.add_to_index(self.index, arr)
+            ids = np.array(id_buffer, dtype=np.int64)
+            self.embedding_service.add_to_index(self.index, arr, ids)
             buffer.clear()
+            id_buffer.clear()
 
         # batch_size=32 keeps peak RAM low enough for Render free tier (512 MB).
         for emb in self.embedding_service.embed_stream(text_chunks, batch_size=32):
+            chunk_id = base_id + produced
             buffer.append(emb)
+            id_buffer.append(chunk_id)
             self.chunks.append(
                 {
-                    "id": base_id + produced,
+                    "id": chunk_id,
                     "text": text_chunks[produced],
                     "source": filename,
                 }
@@ -123,18 +128,21 @@ class RAGPipeline:
         return total
 
     def delete_document(self, filename: str) -> None:
+        ids_to_remove = [c["id"] for c in self.chunks if c["source"] == filename]
         self.chunks = [c for c in self.chunks if c["source"] != filename]
 
-        # Rebuild index from remaining chunks (required after deletion)
-        self.index = self.embedding_service.create_index(self.dim)
-        if self.chunks:
-            texts = [c["text"] for c in self.chunks]
-            embeddings = self.embedding_service.embed(texts, batch_size=32)
-            self.embedding_service.add_to_index(self.index, embeddings)
-
-        # Re-assign sequential IDs
-        for i, chunk in enumerate(self.chunks):
-            chunk["id"] = i
+        if ids_to_remove:
+            try:
+                self.embedding_service.remove_from_index(self.index, np.array(ids_to_remove, dtype=np.int64))
+            except AttributeError:
+                # Fallback if old index was IndexFlatIP without ID support
+                logger.warning("Old FAISS index detected without ID support. Rebuilding index this one time.")
+                self.index = self.embedding_service.create_index(self.dim)
+                if self.chunks:
+                    texts = [c["text"] for c in self.chunks]
+                    ids = [c["id"] for c in self.chunks]
+                    embeddings = self.embedding_service.embed(texts, batch_size=32)
+                    self.embedding_service.add_to_index(self.index, embeddings, np.array(ids, dtype=np.int64))
 
         self._save()
 

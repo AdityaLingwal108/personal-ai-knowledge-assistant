@@ -73,15 +73,37 @@ def _load_txt(filepath: str) -> str:
 
 
 def chunk_text(text: str, chunk_size: int = 600, overlap: int = 120) -> List[str]:
-    step = chunk_size - overlap
+    # Semantic chunking: split by paragraphs
+    paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
     chunks = []
-    i = 0
-    while True:
-        start = i * step
-        if start >= len(text):
-            break
-        chunk = text[start : start + chunk_size]
-        if len(chunk) >= 50:
-            chunks.append(chunk)
-        i += 1
-    return chunks
+    current_chunk = ""
+
+    def get_overlap(text: str, overlap_size: int) -> str:
+        if len(text) <= overlap_size:
+            return text
+        tail = text[-overlap_size:]
+        space_idx = tail.find(" ")
+        return tail[space_idx + 1 :] if space_idx != -1 else tail
+
+    for p in paragraphs:
+        # If a single paragraph is too large, split by sentences (roughly by '.')
+        if len(p) > chunk_size:
+            sentences = [s.strip() + "." for s in p.split(".") if s.strip()]
+            for s in sentences:
+                if len(current_chunk) + len(s) > chunk_size and current_chunk:
+                    chunks.append(current_chunk.strip())
+                    current_chunk = get_overlap(current_chunk, overlap) + " " + s
+                else:
+                    current_chunk += " " + s if current_chunk else s
+        else:
+            if len(current_chunk) + len(p) > chunk_size and current_chunk:
+                chunks.append(current_chunk.strip())
+                current_chunk = get_overlap(current_chunk, overlap) + "\n\n" + p
+            else:
+                current_chunk += "\n\n" + p if current_chunk else p
+
+    if current_chunk.strip():
+        chunks.append(current_chunk.strip())
+
+    # Filter out tiny leftover chunks
+    return [c for c in chunks if len(c) >= 50]

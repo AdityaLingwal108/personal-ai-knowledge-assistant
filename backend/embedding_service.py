@@ -34,11 +34,14 @@ class EmbeddingService:
         for emb in self.model.embed(texts, batch_size=batch_size):
             yield emb
 
-    def create_index(self, dim: int) -> faiss.IndexFlatIP:
-        return faiss.IndexFlatIP(dim)
+    def create_index(self, dim: int) -> faiss.IndexIDMap:
+        return faiss.IndexIDMap(faiss.IndexFlatIP(dim))
 
-    def add_to_index(self, index: faiss.Index, embeddings: np.ndarray) -> None:
-        index.add(embeddings)
+    def add_to_index(self, index: faiss.IndexIDMap, embeddings: np.ndarray, ids: np.ndarray) -> None:
+        index.add_with_ids(embeddings, ids)
+
+    def remove_from_index(self, index: faiss.IndexIDMap, ids: np.ndarray) -> None:
+        index.remove_ids(ids)
 
     def search(
         self, query: str, index: faiss.Index, top_k: int

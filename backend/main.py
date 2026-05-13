@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import time
+import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -162,17 +163,14 @@ async def upload_document(
     if file.filename in pipeline.get_documents():
         pipeline.delete_document(file.filename)
 
-    # Stream to disk so we never hold the full file in RAM.
+    # Stream to disk without blocking the event loop
     try:
-        bytes_written = 0
-        with open(save_path, "wb") as f:
-            while True:
-                chunk = await file.read(UPLOAD_CHUNK)
-                if not chunk:
-                    break
-                f.write(chunk)
-                bytes_written += len(chunk)
-        logger.info(f"Saved {filename_size_log(file.filename, bytes_written)}")
+        def save_to_disk():
+            with open(save_path, "wb") as f:
+                shutil.copyfileobj(file.file, f)
+        
+        await run_in_threadpool(save_to_disk)
+        logger.info(f"Saved {file.filename}")
     except Exception as e:
         save_path.unlink(missing_ok=True)
         raise HTTPException(status_code=500, detail=f"Failed to save file: {e}")
