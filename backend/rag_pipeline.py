@@ -4,7 +4,7 @@ from typing import List, Dict
 
 from document_loader import load_document, chunk_text
 from embedding_service import EmbeddingService
-from model_interface import KnowledgeAssistantModel
+from model_interface import CortexModel
 
 
 class RAGPipeline:
@@ -14,7 +14,7 @@ class RAGPipeline:
         self.chunks_path = self.data_dir / "chunks.json"
 
         self.embedding_service = EmbeddingService()
-        self.model = KnowledgeAssistantModel()
+        self.model = CortexModel()
         self.dim = 384  # all-MiniLM-L6-v2 output dimension
 
         self._load_or_init()

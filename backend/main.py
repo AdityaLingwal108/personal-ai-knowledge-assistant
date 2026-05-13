@@ -23,7 +23,7 @@ DOCS_DIR.mkdir(exist_ok=True)
 # ---------------------------------------------------------------------------
 # App + CORS
 # ---------------------------------------------------------------------------
-app = FastAPI(title="Personal AI Knowledge Assistant", version="1.0.0")
+app = FastAPI(title="Cortex", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -147,7 +147,7 @@ async def chat(request: ChatRequest):
     if not request.api_key.strip():
         raise HTTPException(
             status_code=400,
-            detail="Gemini API key is required. Enter your key in Settings (gear icon).",
+            detail="Groq API key is required. Enter your key in Settings (gear icon).",
         )
 
     try:

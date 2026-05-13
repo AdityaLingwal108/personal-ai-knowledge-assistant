@@ -180,7 +180,7 @@ export default function App() {
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
             </svg>
           </button>
-          <span className="font-semibold text-sm">AI Knowledge Assistant</span>
+          <span className="font-semibold text-sm">Cortex</span>
         </div>
 
         {/* Chat area */}

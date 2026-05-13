@@ -3,7 +3,7 @@ from openai import OpenAI
 
 
 SYSTEM_INSTRUCTION = (
-    "You are a precise personal knowledge assistant. "
+    "You are Cortex, a precise personal knowledge assistant. "
     "Answer strictly from the provided document context. "
     "Synthesize information across multiple sources when relevant — do not treat each source in isolation. "
     "If the answer is not present in the documents, say clearly: "
@@ -13,7 +13,7 @@ SYSTEM_INSTRUCTION = (
 )
 
 
-class KnowledgeAssistantModel:
+class CortexModel:
     def __init__(self, model_name: str = "llama-3.3-70b-versatile"):
         self.model_name = model_name
 

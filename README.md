@@ -1,4 +1,4 @@
-# Personal AI Knowledge Assistant
+# Cortex
 
 A production-quality RAG (Retrieval-Augmented Generation) system. Upload your notes, PDFs, research papers, and documents, then have a natural conversation with your entire knowledge base.
 
