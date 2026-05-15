@@ -4,7 +4,7 @@ A production-quality RAG (Retrieval-Augmented Generation) system. Upload your no
 
 ## Tech Stack
 
-- **Backend:** Python 3.11+, FastAPI, sentence-transformers (all-MiniLM-L6-v2), FAISS, Groq (llama-3.3-70b-versatile)
+- **Backend:** Python 3.11+, FastAPI, fastembed (all-MiniLM-L6-v2, ONNX), FAISS, Groq (llama-3.3-70b-versatile)
 - **Frontend:** React 18, Vite, Tailwind CSS, Axios
 - **Persistence:** FAISS index + JSON chunk store on disk (survives restarts)
 
@@ -28,7 +28,7 @@ pip install -r requirements.txt
 uvicorn main:app --reload --port 8000
 ```
 
-**First run only:** `all-MiniLM-L6-v2` (~90 MB) downloads automatically from HuggingFace. Subsequent starts are instant.
+**First run only:** `all-MiniLM-L6-v2` (~90 MB) downloads automatically as an ONNX model. Subsequent starts are instant.
 
 The backend creates `backend/data/` and `backend/data/documents/` automatically.
 
@@ -82,7 +82,7 @@ App runs at **http://localhost:5173**
 ```
 Upload flow:
   File → saved to data/documents/
-       → parsed (PDF via pypdf, DOCX via python-docx, TXT natively)
+       → parsed (PDF via pypdfium2, DOCX via python-docx, TXT natively)
        → chunked (600 chars, 120-char overlap, min 50 chars)
        → embedded (all-MiniLM-L6-v2, 384-dim, L2-normalized)
        → added to FAISS IndexFlatIP (incremental, no rebuild)
